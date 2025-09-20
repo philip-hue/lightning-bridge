@@ -317,3 +317,83 @@
     (ok true)
   )
 )
+
+;; Finalizes unilateral channel closure after dispute period expires
+;; Executes settlement when no disputes were raised during challenge window
+(define-public (resolve-unilateral-close 
+  (channel-id (buff 32)) 
+  (participant-b principal)
+)
+  (let 
+    (
+      (channel (unwrap! 
+        (map-get? payment-channels {
+          channel-id: channel-id, 
+          participant-a: tx-sender, 
+          participant-b: participant-b
+        }) 
+        ERR-CHANNEL-NOT-FOUND
+      ))
+      (proposed-balance-a (get balance-a channel))
+      (proposed-balance-b (get balance-b channel))
+    )
+    ;; Input validation
+    (asserts! (is-valid-channel-id channel-id) ERR-INVALID-INPUT)
+    (asserts! (not (is-eq tx-sender participant-b)) ERR-INVALID-INPUT)
+    
+    ;; Ensure dispute period has expired
+    (asserts! 
+      (>= stacks-block-height (get dispute-deadline channel)) 
+      ERR-DISPUTE-PERIOD
+    )
+
+    ;; Execute final settlement transfers
+    (try! (as-contract (stx-transfer? proposed-balance-a tx-sender tx-sender)))
+    (try! (as-contract (stx-transfer? proposed-balance-b tx-sender participant-b)))
+
+    ;; Mark channel as closed and clear state
+    (map-set payment-channels 
+      {
+        channel-id: channel-id, 
+        participant-a: tx-sender, 
+        participant-b: participant-b
+      }
+      (merge channel {
+        is-open: false,
+        balance-a: u0,
+        balance-b: u0,
+        total-deposited: u0
+      })
+    )
+
+    (ok true)
+  )
+)
+
+;; READ-ONLY FUNCTIONS
+
+;; Retrieves complete channel state information
+;; Returns all relevant channel data for monitoring and dispute resolution
+(define-read-only (get-channel-info 
+  (channel-id (buff 32)) 
+  (participant-a principal)
+  (participant-b principal)
+)
+  (map-get? payment-channels {
+    channel-id: channel-id, 
+    participant-a: participant-a, 
+    participant-b: participant-b
+  })
+)
+
+;; EMERGENCY FUNCTIONS
+
+;; Emergency fund recovery mechanism for contract owner only
+;; Last resort function for critical contract upgrades or migrations
+(define-public (emergency-withdraw)
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT-OWNER) ERR-NOT-AUTHORIZED)
+    (try! (stx-transfer? (stx-get-balance (as-contract tx-sender)) (as-contract tx-sender) CONTRACT-OWNER))
+    (ok true)
+  )
+)
